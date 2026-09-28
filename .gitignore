@@ -1,0 +1,90 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.json
+htmlcov/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.DS_Store
+.vscode/
+.idea/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Downloaded datasets / third-party source trees
+dataset/
+
+# C++ demo build artifacts
+examples/**/test_runner*
+examples/**/*.gc??
+examples/**/coverage.info
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.dSYM/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Node
+node_modules/
+*.tsbuildinfo
+npm-debug.log*
+
+# Agent-generated demo tests (remove this line if you want to commit them)
+examples/demo_calculator/tests/*.cpp
+
+# Third-party source trees cloned for experiments
+data/
+
+# Benchmark sweeps (generated tests, coverage builds, result tables)
+runs/
+bench_generated_tests/
+
+# LaTeX build artefacts: the paper sources are tracked, the output is not.
+paper/**/*.aux
+paper/**/*.bbl
+paper/**/*.blg
+paper/**/*.fdb_latexmk
+paper/**/*.fls
+paper/**/*.log
+paper/**/*.out
+paper/**/*.synctex.gz
+paper/**/*.toc
+paper/**/*.lof
+paper/**/*.lot
+paper/**/main.pdf
+paper/**/*.listing
+.codex
+.claude
+.agents
+paper/acmart-primary/
+paper/acmart-primary.zip
+
+# Scratch PNG renders of the figures; only the PDFs belong in the paper.
+paper/img/previews/
+
+# Third-party report template pasted in for reference; the internship report itself lives in paper/ttdn/.
+template_KLTN_UET_Vi/
+graphify-out/
+.gitnexus/
