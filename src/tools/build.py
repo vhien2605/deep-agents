@@ -107,3 +107,52 @@ def run_in_project(project_root: Path, cmd: list[str]) -> str:
     )
 
 
+def make_build_tools(project_root: Path) -> list:
+    """Build make/run tools scoped to `project_root`."""
+
+    @tool
+    def make_target(target: str = "", extra_args: str = "") -> str:
+        """Run `make <target>` in the project root (empty target = default target).
+        `extra_args` are extra space-separated make arguments, e.g. "CXX=clang++ -j4".
+        Returns exit code, stdout, and stderr. Use `make_target("test")` to build
+        and run the test suite; a non-zero exit code with compiler or assertion
+        output means the generated tests need fixing.
+        """
+        cmd = ["make"]
+        if target:
+            cmd.append(target)
+        if extra_args:
+            cmd.extend(extra_args.split())
+        return run_in_project(project_root, cmd)
+
+    @tool
+    def run_command(command: str) -> str:
+        """Run an arbitrary shell command in the project root (e.g.
+        "python -m pytest -x -q", "uv run pytest", "coverage run -m pytest").
+        Use for Python projects or anything the make tools don't cover.
+        Returns exit code, stdout, and stderr.
+        """
+        import shlex
+
+        try:
+            cmd = shlex.split(command)
+        except ValueError as exc:
+            return f"ERROR: cannot parse command: {exc}"
+        if not cmd:
+            return "ERROR: empty command"
+        return run_in_project(project_root, cmd)
+
+    @tool
+    def run_test_binary(binary_path: str, args: str = "") -> str:
+        """Execute a built test binary (path relative to the project root) and
+        return its exit code and output. Use after a successful build when you
+        want to run the tests directly instead of via `make test`.
+        """
+        binary = Path(binary_path)
+        full = binary if binary.is_absolute() else project_root / binary
+        if not full.is_file():
+            return f"ERROR: binary not found: {full}"
+        cmd = [str(full)] + (args.split() if args else [])
+        return run_in_project(project_root, cmd)
+
+    return [make_target, run_command, run_test_binary]
