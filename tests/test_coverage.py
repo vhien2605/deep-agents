@@ -288,3 +288,385 @@ def test_coverage_report_filter_no_match(coverage_tools):
     assert data["total_line_coverage_pct"] == 0.0
 
 
+# ---------------------------------------------------------------------------
+# make_coverage_tools — coverage_py_report
+# ---------------------------------------------------------------------------
+
+
+SAMPLE_COVERAGE_JSON = {
+    "files": {
+        "src/main.py": {
+            "summary": {
+                "num_statements": 10,
+                "missing_lines": 2,
+                "percent_covered": 80.0,
+            },
+            "missing_lines": [5, 10],
+            "functions": {
+                "main": {"summary": {"covered_lines": 8}},
+                "unused": {"summary": {"covered_lines": 0}},
+            },
+        },
+        "src/util.py": {
+            "summary": {
+                "num_statements": 5,
+                "missing_lines": 0,
+                "percent_covered": 100.0,
+            },
+            "missing_lines": [],
+            "functions": {
+                "helper": {"summary": {"covered_lines": 5}},
+            },
+        },
+    }
+}
+
+
+def test_coverage_py_report_basic(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]  # coverage_py_report
+    (root / "coverage.json").write_text(json.dumps(SAMPLE_COVERAGE_JSON))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    data = json.loads(result)
+    assert len(data["files"]) == 2
+    assert data["total_line_coverage_pct"] == round(100.0 * (8 + 5) / 15, 2)
+
+
+def test_coverage_py_report_source_filter(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps(SAMPLE_COVERAGE_JSON))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": "main"})
+    data = json.loads(result)
+    assert len(data["files"]) == 1
+    assert "main.py" in data["files"][0]["file"]
+
+
+def test_coverage_py_report_not_found(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    result = py_fn.invoke({"json_file": "missing.json", "source_filter": ""})
+    assert "ERROR" in result
+    assert "report not found" in result
+
+
+def test_coverage_py_report_invalid_json(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text("{invalid json")
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    assert "ERROR" in result
+    assert "invalid coverage JSON" in result
+
+
+def test_coverage_py_report_uncovered_functions(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps(SAMPLE_COVERAGE_JSON))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    data = json.loads(result)
+    main_file = next(f for f in data["files"] if "main.py" in f["file"])
+    assert "unused" in main_file["uncovered_functions"]
+    assert "main" not in main_file["uncovered_functions"]
+
+
+def test_coverage_py_report_empty_files(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps({"files": {}}))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    data = json.loads(result)
+    assert data["files"] == []
+    assert data["total_line_coverage_pct"] == 0.0
+
+
+def test_coverage_py_report_no_files_key(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps({}))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    data = json.loads(result)
+    assert data["files"] == []
+
+
+def test_coverage_py_report_absolute_path(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps(SAMPLE_COVERAGE_JSON))
+    result = py_fn.invoke({
+        "json_file": str(root / "coverage.json"),
+        "source_filter": "",
+    })
+    data = json.loads(result)
+    assert len(data["files"]) == 2
+
+
+def test_coverage_py_report_filter_no_match(coverage_tools):
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    (root / "coverage.json").write_text(json.dumps(SAMPLE_COVERAGE_JSON))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": "nomatch"})
+    data = json.loads(result)
+    assert data["files"] == []
+    assert data["total_line_coverage_pct"] == 0.0
+
+
+def test_coverage_py_report_uncovered_lines_capped(coverage_tools):
+    """missing_lines list is capped at 40 entries."""
+    tools, root = coverage_tools
+    py_fn = tools[3]
+    data = {
+        "files": {
+            "src/big.py": {
+                "summary": {
+                    "num_statements": 50,
+                    "missing_lines": 50,
+                    "percent_covered": 0.0,
+                },
+                "missing_lines": list(range(1, 100)),
+                "functions": {},
+            }
+        }
+    }
+    (root / "coverage.json").write_text(json.dumps(data))
+    result = py_fn.invoke({"json_file": "coverage.json", "source_filter": ""})
+    parsed = json.loads(result)
+    assert len(parsed["files"][0]["uncovered_lines"]) == 40
+
+
+# ---------------------------------------------------------------------------
+# make_coverage_tools — jacoco_report
+# ---------------------------------------------------------------------------
+
+
+SIMPLE_JACOCO_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<report name="JaCoCo Coverage Report">
+  <package name="com/example">
+    <class name="com/example/App" sourcefilename="App.java">
+      <method name="run" desc="()V">
+        <counter type="INSTRUCTION" missed="0" covered="10"/>
+        <counter type="LINE" missed="0" covered="5"/>
+      </method>
+      <method name="unused" desc="()V">
+        <counter type="INSTRUCTION" missed="5" covered="0"/>
+        <counter type="LINE" missed="2" covered="0"/>
+      </method>
+    </class>
+    <sourcefile name="App.java">
+      <line nr="1" mi="0" ci="2" mb="0" cb="0"/>
+      <line nr="2" mi="0" ci="3" mb="0" cb="0"/>
+      <line nr="3" mi="2" ci="0" mb="0" cb="0"/>
+      <counter type="LINE" missed="1" covered="2"/>
+    </sourcefile>
+  </package>
+</report>
+"""
+
+
+def test_jacoco_report_basic(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]  # jacoco_report
+    (root / "jacoco.xml").write_text(SIMPLE_JACOCO_XML)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    assert len(data["files"]) == 1
+    assert "com/example/App.java" in data["files"][0]["file"]
+
+
+def test_jacoco_report_uncovered_functions(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(SIMPLE_JACOCO_XML)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    f = data["files"][0]
+    assert "App.unused" in f["uncovered_functions"]
+    assert "App.run" not in f["uncovered_functions"]
+
+
+def test_jacoco_report_source_filter(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(SIMPLE_JACOCO_XML)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": "example"})
+    data = json.loads(result)
+    assert len(data["files"]) == 1
+
+
+def test_jacoco_report_not_found(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    result = jacoco_fn.invoke({"xml_file": "missing.xml", "source_filter": ""})
+    assert "ERROR" in result
+    assert "report not found" in result
+
+
+def test_jacoco_report_invalid_xml(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text("<not valid xml")
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    assert "ERROR" in result
+    assert "invalid JaCoCo XML" in result
+
+
+def test_jacoco_report_constructor_renamed(coverage_tools):
+    """Methods named <init> and <clinit> are renamed to constructor/static-init."""
+    xml = """\
+<?xml version="1.0"?>
+<report>
+  <package name="pkg">
+    <class name="pkg/Foo" sourcefilename="Foo.java">
+      <method name="&lt;init&gt;" desc="()V">
+        <counter type="INSTRUCTION" missed="5" covered="0"/>
+      </method>
+      <method name="&lt;clinit&gt;" desc="()V">
+        <counter type="INSTRUCTION" missed="5" covered="0"/>
+      </method>
+    </class>
+    <sourcefile name="Foo.java">
+      <line nr="1" mi="2" ci="0" mb="0" cb="0"/>
+      <counter type="LINE" missed="1" covered="0"/>
+    </sourcefile>
+  </package>
+</report>
+"""
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(xml)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    f = data["files"][0]
+    assert "Foo.constructor" in f["uncovered_functions"]
+    assert "Foo.static-init" in f["uncovered_functions"]
+
+
+def test_jacoco_report_absolute_path(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(SIMPLE_JACOCO_XML)
+    result = jacoco_fn.invoke({
+        "xml_file": str(root / "jacoco.xml"),
+        "source_filter": "",
+    })
+    data = json.loads(result)
+    assert len(data["files"]) == 1
+
+
+def test_jacoco_report_filter_no_match(coverage_tools):
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(SIMPLE_JACOCO_XML)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": "nomatch"})
+    data = json.loads(result)
+    assert data["files"] == []
+    assert data["total_line_coverage_pct"] == 0.0
+
+
+def test_jacoco_report_no_line_counter(coverage_tools):
+    """When a sourcefile has no LINE counter, defaults to missed=0, covered=0."""
+    xml = """\
+<?xml version="1.0"?>
+<report>
+  <package name="pkg">
+    <sourcefile name="Empty.java">
+      <line nr="1" mi="0" ci="2" mb="0" cb="0"/>
+    </sourcefile>
+  </package>
+</report>
+"""
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(xml)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    f = data["files"][0]
+    assert f["lines_found"] == 0
+    assert f["lines_hit"] == 0
+    assert f["line_coverage_pct"] == 0.0
+
+
+def test_jacoco_report_empty_package_name(coverage_tools):
+    """When package name is empty, file is just the sourcefile name."""
+    xml = """\
+<?xml version="1.0"?>
+<report>
+  <package name="">
+    <sourcefile name="Default.java">
+      <line nr="1" mi="0" ci="2" mb="0" cb="0"/>
+      <counter type="LINE" missed="0" covered="1"/>
+    </sourcefile>
+  </package>
+</report>
+"""
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(xml)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    assert data["files"][0]["file"] == "Default.java"
+
+
+def test_jacoco_report_instruction_counter_fallback(coverage_tools):
+    """When method has no LINE counter, INSTRUCTION counter is used."""
+    xml = """\
+<?xml version="1.0"?>
+<report>
+  <package name="pkg">
+    <class name="pkg/Foo" sourcefilename="Foo.java">
+      <method name="bar" desc="()V">
+        <counter type="INSTRUCTION" missed="5" covered="0"/>
+      </method>
+    </class>
+    <sourcefile name="Foo.java">
+      <line nr="1" mi="0" ci="2" mb="0" cb="0"/>
+      <counter type="LINE" missed="0" covered="1"/>
+    </sourcefile>
+  </package>
+</report>
+"""
+    tools, root = coverage_tools
+    jacoco_fn = tools[4]
+    (root / "jacoco.xml").write_text(xml)
+    result = jacoco_fn.invoke({"xml_file": "jacoco.xml", "source_filter": ""})
+    data = json.loads(result)
+    # bar has INSTRUCTION covered=0, so it should be in uncovered_functions
+    assert "Foo.bar" in data["files"][0]["uncovered_functions"]
+
+
+# ---------------------------------------------------------------------------
+# make_coverage_tools — run_coverage_build + capture_lcov_tracefile
+# ---------------------------------------------------------------------------
+
+
+def test_run_coverage_build_calls_make(coverage_tools):
+    """run_coverage_build delegates to run_in_project with make."""
+    tools, root = coverage_tools
+    cov_build_fn = tools[0]
+    (root / "Makefile").write_text("coverage:\n\t@echo coverage_done\n")
+    result = cov_build_fn.invoke({"make_coverage_target": "coverage"})
+    assert "coverage_done" in result
+    assert "exit_code: 0" in result
+
+
+def test_run_coverage_build_custom_target(coverage_tools):
+    tools, root = coverage_tools
+    cov_build_fn = tools[0]
+    (root / "Makefile").write_text("mycov:\n\t@echo custom_target\n")
+    result = cov_build_fn.invoke({"make_coverage_target": "mycov"})
+    assert "custom_target" in result
+
+
+def test_capture_lcov_tracefile_calls_lcov(coverage_tools):
+    """capture_lcov_tracefile runs lcov --capture."""
+    tools, root = coverage_tools
+    capture_fn = tools[1]
+    result = capture_fn.invoke({"output_file": "out.info", "directory": "."})
+    # lcov may not be installed, but the command should be formatted
+    assert "$ lcov" in result or "lcov" in result
+
+
+def test_make_coverage_tools_returns_five_tools(tmp_path):
+    tools = make_coverage_tools(tmp_path)
+    assert len(tools) == 5
