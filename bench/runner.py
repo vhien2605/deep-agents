@@ -112,3 +112,67 @@ def _model_from(message) -> str:
 BUILD_TOOL_NAMES = {"make_target", "run_command", "run_test_binary"}
 
 
+def generate_for_method(
+    agent,
+    project_root: Path,
+    focal: FocalMethod,
+    index: int,
+    *,
+    recursion_limit: int,
+    stream_callback=None,
+    allow_build: bool = True,
+) -> GenerationResult:
+    """Run the agent for one focal method and return the run's cost metrics."""
+    output_path = output_path_for(project_root, focal, index)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.unlink(missing_ok=True)
+
+    relative_output = output_path.relative_to(project_root).as_posix()
+    task = TASK_TEMPLATE.format(
+        file=focal.file,
+        signature=focal.signature,
+        start_line=focal.start_line,
+        end_line=focal.end_line,
+        name=focal.name,
+        complexity=focal.complexity,
+        branch_count=focal.branch_count,
+        output_path=relative_output,
+        build_policy="" if allow_build else NO_BUILD_POLICY,
+    )
+
+    result = GenerationResult(focal=focal, output_path=output_path)
+    started = time.monotonic()
+    build_calls = 0
+    try:
+        for update in agent.stream(
+            {"messages": [{"role": "user", "content": task}]},
+            stream_mode="updates",
+            config={"recursion_limit": recursion_limit, "run_name": "bench-gen"},
+        ):
+            for _node, payload in update.items():
+                if not isinstance(payload, dict):
+                    continue
+                for message in payload.get("messages", []) or []:
+                    if getattr(message, "type", "") != "ai":
+                        continue
+                    input_tokens, output_tokens, total = _usage_from(message)
+                    result.input_tokens += input_tokens
+                    result.output_tokens += output_tokens
+                    result.total_tokens += total
+                    if not result.model:
+                        result.model = _model_from(message)
+                    for call in getattr(message, "tool_calls", []) or []:
+                        name = call.get("name", "")
+                        result.tool_calls[name] = result.tool_calls.get(name, 0) + 1
+                        if name in BUILD_TOOL_NAMES:
+                            build_calls += 1
+            if stream_callback:
+                stream_callback(update)
+    except Exception as exc:  # noqa: BLE001 — one bad run must not kill the sweep
+        result.error = f"{type(exc).__name__}: {exc}"[:500]
+
+    result.duration_s = round(time.monotonic() - started, 2)
+    # The first build is generation, not repair; every later one is a fix round.
+    result.fix_phase = max(0, build_calls - 1)
+    result.wrote_file = output_path.is_file() and output_path.stat().st_size > 0
+    return result
