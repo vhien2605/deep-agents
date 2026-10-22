@@ -262,3 +262,174 @@ def _failed_from_manifest(
     return out
 
 
+def cmd_gen(args) -> int:
+    project = Path(args.project).resolve()
+    args.no_agent_fix = getattr(args, "no_agent_fix", False)
+    out_dir = Path(args.out).resolve()
+
+    retry_pairs: list[tuple[int, FocalMethod]] = []
+    if getattr(args, "retry_failed", False):
+        # Failures are not random: measured across sweeps, the methods that time
+        # out or exhaust the step budget have several times the cyclomatic
+        # complexity of those that succeed, so leaving them out biases every
+        # rate upward. Retrying them is what keeps the sample honest.
+        retry_pairs = _failed_from_manifest(
+            out_dir, getattr(args, "retry_cause", "") or ""
+        )
+        if not retry_pairs:
+            print("no failed methods to retry", file=sys.stderr)
+            return 0
+        selected = [m for _, m in retry_pairs]
+        print(f"retrying {len(selected)} previously failed methods", file=sys.stderr)
+    else:
+        selected = _selection_from(args)
+    if not selected:
+        print("nothing selected", file=sys.stderr)
+        return 1
+
+    # Imported here so `discover`/`eval` work without LLM configuration.
+    from src import create_cpp_unittest_agent
+    from src.config import (
+        DEFAULT_RECURSION_LIMIT, LLM_MODEL, LLM_TEMPERATURE, LLM_TIMEOUT_SECONDS,
+    )
+
+    allow_build = not args.no_agent_fix
+    agent = create_cpp_unittest_agent(
+        project, coverage_target=args.coverage, with_build_tools=allow_build
+    )
+    recursion_limit = args.recursion_limit or DEFAULT_RECURSION_LIMIT
+    # Recorded with the sweep so the table can state the sampling conditions it
+    # was produced under — the numbers are meaningless without them.
+    sweep_config = {
+        "model_requested": LLM_MODEL,
+        "temperature": LLM_TEMPERATURE,
+        "request_timeout_s": LLM_TIMEOUT_SECONDS,
+        "recursion_limit": recursion_limit,
+        "agent_may_build": allow_build,
+        "repair_rounds": getattr(args, "repair_rounds", 0),
+        "selection": {
+            "filter_file": args.filter_file, "filter_method": args.filter_method,
+            "min_cc": args.min_cc, "max_per_file": args.max_per_file,
+            "limit": args.limit, "sample": args.sample, "seed": args.seed,
+            "min_lines": args.min_lines,
+            # Recorded separately from `sample`: these two change which methods
+            # are in the set, so a table cannot be compared against another
+            # without knowing whether they were on.
+            "citywalk_focal": getattr(args, "citywalk_focal", False),
+            "paper_sample": getattr(args, "paper_sample", False),
+            "selected_count": len(selected),
+        },
+    }
+
+    generated_dir = out_dir / GENERATED_DIRNAME
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
+    if retry_pairs:
+        # Keep every existing row, not only the successes. The manifest is
+        # rewritten at each checkpoint, so seeding it with the successes alone
+        # erases the failures that have not been retried yet — and a pass this
+        # long does get interrupted. Losing them is silent: the rows vanish
+        # from results.csv and the next --retry-failed finds nothing to do.
+        # Each retried method replaces its own row by index instead.
+        entries = list(_read_manifest(out_dir)["entries"])
+    indices = [i for i, _ in retry_pairs] if retry_pairs else list(range(len(selected)))
+    started = time.monotonic()
+    workers = max(1, args.workers)
+    lock = threading.Lock()
+    done = 0
+
+    # Worker 0 uses the project itself; the rest get private copies. One agent
+    # per workspace, since an agent is bound to the tree it was built for.
+    local = threading.local()
+    worker_ids = itertools.count()
+    # Private copies exist so two agents cannot run a build in the same tree.
+    # Without the build tools there is nothing to collide over — each method
+    # writes its own uniquely named test file — so every worker shares the
+    # project directly. That saves a copy per worker, which for mlx at 319 MB
+    # and 32 workers would be 10 GB of disk and minutes of start-up.
+    share_workspace = workers == 1 or not allow_build
+    workspaces: dict[int, tuple[Path, object]] = (
+        {0: (project, agent)} if share_workspace else {}
+    )
+
+    def agent_for(worker_id: int) -> tuple[Path, object]:
+        if share_workspace:
+            return workspaces[0]
+        if worker_id not in workspaces:
+            workspace = _worker_workspace(out_dir, project, worker_id)
+            workspaces[worker_id] = (
+                workspace,
+                create_cpp_unittest_agent(
+                    workspace, coverage_target=args.coverage,
+                    with_build_tools=allow_build,
+                ),
+            )
+        return workspaces[worker_id]
+
+    def run_one(item: tuple[int, object]) -> dict:
+        nonlocal done
+        position, focal = item
+        index = indices[position]
+        if not hasattr(local, "worker_id"):
+            # First task on this thread: claim an id, and with it a workspace.
+            # ThreadPoolExecutor reuses threads, so this happens at most
+            # `workers` times.
+            with lock:
+                local.worker_id = next(worker_ids)
+                local.workspace, local.agent = agent_for(local.worker_id)
+        result = runner.generate_for_method(
+            local.agent, local.workspace, focal, index,
+            recursion_limit=recursion_limit, allow_build=allow_build,
+        )
+        stored = generated_dir / result.output_path.name
+        if result.wrote_file:
+            shutil.copy2(result.output_path, stored)
+        entry = {
+            "focal": asdict(focal),
+            "index": index,
+            "test_file": stored.name if result.wrote_file else "",
+            "wrote_file": result.wrote_file,
+            "total_tokens": result.total_tokens,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "duration_s": result.duration_s,
+            "fix_phase": result.fix_phase,
+            "model": result.model,
+            "error": result.error,
+            "tool_calls": result.tool_calls,
+        }
+        status = "ok" if result.wrote_file else f"NO FILE ({result.error or 'agent wrote nothing'})"
+        with lock:
+            # Replace by index rather than append: on a retry the manifest
+            # already carries this method's failed row.
+            entries[:] = [e for e in entries if e["index"] != index]
+            entries.append(entry)
+            done += 1
+            # Checkpoint after every run: a sweep this long must survive being
+            # killed. Entries are sorted so the manifest order is the focal
+            # order regardless of which worker finished first.
+            entries.sort(key=lambda e: e["index"])
+            _write_manifest(out_dir, project, entries, sweep_config)
+            print(
+                f"[{done}/{len(selected)}] w{local.worker_id} "
+                f"{focal.file}:{focal.start_line} {focal.name}\n"
+                f"    -> {status}  tokens={result.total_tokens} {result.duration_s}s "
+                f"fix_rounds={result.fix_phase}",
+                file=sys.stderr, flush=True,
+            )
+        return entry
+
+    if workers == 1:
+        for item in enumerate(selected):
+            run_one(item)
+    else:
+        print(f"generating with {workers} workers", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(run_one, enumerate(selected)))
+
+    elapsed = round(time.monotonic() - started, 1)
+    wrote = sum(1 for e in entries if e["wrote_file"])
+    print(f"gen done: {wrote}/{len(entries)} files in {elapsed}s -> {out_dir}", file=sys.stderr)
+    return 0
+
+
