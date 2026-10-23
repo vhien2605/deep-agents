@@ -433,3 +433,232 @@ def cmd_gen(args) -> int:
     return 0
 
 
+def cmd_eval(args) -> int:
+    out_dir = Path(args.out).resolve()
+    args.repair_rounds = getattr(args, "repair_rounds", 0)
+    manifest = _read_manifest(out_dir)
+    project = Path(args.project).resolve() if args.project else _resolve_project(manifest["project"])
+    entries = manifest["entries"]
+    shard_k = shard_n = None
+    if getattr(args, "shard", ""):
+        shard_k, shard_n = (int(x) for x in args.shard.split("/"))
+        entries = [e for i, e in enumerate(entries) if i % shard_n == shard_k]
+        print(f"shard {shard_k}/{shard_n}: {len(entries)} entries", file=sys.stderr)
+
+    missing = [name for name, path in harness.toolchain_report().items() if path is None]
+    if missing:
+        print(f"ERROR: missing toolchain: {', '.join(missing)}", file=sys.stderr)
+        print("Run this inside the benchmark container (see bench/Dockerfile).", file=sys.stderr)
+        return 2
+    if not harness.gtest_available():
+        print("ERROR: GoogleTest headers not found", file=sys.stderr)
+        return 2
+
+    repair_model = None
+    if args.repair_rounds > 0:
+        from src.llm import build_chat_model
+        # A bare chat model, not an agent: the repair round must be exactly one
+        # call with the file and the diagnostics, as the paper specifies.
+        repair_model = build_chat_model()
+        print(f"repair: up to {args.repair_rounds} LLM round(s) per failing file",
+              file=sys.stderr)
+
+    work_dir = out_dir / ("work" if shard_k is None else f"work-shard{shard_k}")
+    build_dir = Path(args.build_dir).resolve() if args.build_dir else work_dir / "build"
+    print(f"building {project.name} with coverage instrumentation ...", file=sys.stderr)
+    project_build, last = harness.build_instrumented(
+        project, build_dir, cxx_standard=args.std, jobs=args.jobs,
+        extra_cmake_args=args.cmake_arg or [],
+    )
+    if project_build is None:
+        print(f"ERROR: instrumented build failed\n{last.output[-3000:]}", file=sys.stderr)
+        return 3
+    print(f"  linked libraries: {[p.name for p in project_build.libraries]}", file=sys.stderr)
+
+    rows_path = out_dir / (ROWS_NAME if shard_k is None
+                           else f"rows.shard{shard_k}.jsonl")
+    done = {(r.file, r.method, r.line) for r in read_jsonl(rows_path)} if args.resume else set()
+    if not args.resume:
+        rows_path.unlink(missing_ok=True)
+
+    rows: list[Row] = read_jsonl(rows_path) if args.resume else []
+    generated_dir = out_dir / GENERATED_DIRNAME
+
+    for entry in entries:
+        focal = entry["focal"]
+        identity = (focal["file"], focal["name"], focal["start_line"])
+        if identity in done:
+            continue
+        label = f"{focal['file']}:{focal['start_line']} {focal['name']}"
+        row = Row(
+            project=project.name,
+            file=focal["file"],
+            method=focal["name"],
+            line=focal["start_line"],
+            model=entry.get("model", ""),
+            total_tokens=entry.get("total_tokens", 0),
+            duration_s=entry.get("duration_s", 0.0),
+            fix_phase=entry.get("fix_phase", 0),
+            focal_cc=focal["complexity"],
+        )
+        test_file = generated_dir / entry["test_file"] if entry.get("test_file") else None
+        if test_file is None or not test_file.is_file():
+            row.error_category = "no_output"
+            row.error_first_line = entry.get("error", "") or "agent produced no test file"
+        else:
+            evaluated = harness.evaluate_test_file(
+                project_build, test_file, focal["file"], focal["start_line"],
+                focal["end_line"], work_dir,
+                repair_model=repair_model, max_repair_rounds=args.repair_rounds,
+            )
+            row.n_cases = evaluated.n_cases
+            row.n_cases_compiled = evaluated.n_cases_compiled
+            row.n_cases_passed = evaluated.n_cases_passed
+            row.line_coverage = evaluated.line_coverage
+            row.branch_coverage = evaluated.branch_coverage
+            row.touched_focal = evaluated.touched_focal
+            row.error_category = evaluated.error_category
+            row.error_first_line = evaluated.error_first_line
+            row.test_loc = evaluated.test_loc
+            row.test_cc = evaluated.test_cc
+            row.uses_mock = evaluated.uses_mock
+            row.detail = evaluated.detail
+        row.csr = round(row.n_cases_compiled / row.n_cases, 4) if row.n_cases else 0.0
+        row.epr = round(row.n_cases_passed / row.n_cases_compiled, 4) if row.n_cases_compiled else 0.0
+
+        rows.append(row)
+        append_jsonl(row, rows_path)
+        print(
+            f"{label}\n    cases={row.n_cases} compiled={row.n_cases_compiled} "
+            f"passed={row.n_cases_passed} line={row.line_coverage}% "
+            f"branch={row.branch_coverage}% {row.error_category or 'ok'}",
+            file=sys.stderr, flush=True,
+        )
+
+    csv_path = out_dir / CSV_NAME
+    write_csv(rows, csv_path)
+    _print_summary(rows)
+    print(f"\nwrote {csv_path}", file=sys.stderr)
+    return 0
+
+
+def _print_summary(rows: list[Row]) -> None:
+    if not rows:
+        return
+    total_cases = sum(r.n_cases for r in rows)
+    total_compiled = sum(r.n_cases_compiled for r in rows)
+    total_passed = sum(r.n_cases_passed for r in rows)
+    measured = [r for r in rows if r.n_cases_passed > 0]
+    print("\n" + "=" * 60, file=sys.stderr)
+    print(f"methods            : {len(rows)}", file=sys.stderr)
+    print(f"cases written      : {total_cases}", file=sys.stderr)
+    print(
+        f"CSR (compiled/written): {total_compiled}/{total_cases} = "
+        f"{100.0 * total_compiled / total_cases:.1f}%" if total_cases else "CSR: n/a",
+        file=sys.stderr,
+    )
+    print(
+        f"EPR (passed/compiled) : {total_passed}/{total_compiled} = "
+        f"{100.0 * total_passed / total_compiled:.1f}%" if total_compiled else "EPR: n/a",
+        file=sys.stderr,
+    )
+    if measured:
+        line_avg = sum(r.line_coverage for r in measured) / len(measured)
+        touched = sum(1 for r in measured if r.touched_focal)
+        print(f"avg line coverage  : {line_avg:.1f}% (over {len(measured)} runnable rows)",
+              file=sys.stderr)
+        # A branchless method scores 0% branch coverage by arithmetic, not by
+        # any failure of the tests; averaging those in understates the result,
+        # so they are excluded and counted separately.
+        branchy = [
+            r for r in measured
+            if (r.detail.get("coverage") or {}).get("branches_found", 0) > 0
+        ]
+        if branchy:
+            branch_avg = sum(r.branch_coverage for r in branchy) / len(branchy)
+            print(f"avg branch coverage: {branch_avg:.1f}% "
+                  f"(over {len(branchy)} methods that have branches)", file=sys.stderr)
+        else:
+            print("avg branch coverage: n/a (no method under test has branches)",
+                  file=sys.stderr)
+        print(f"touched focal      : {touched}/{len(measured)}", file=sys.stderr)
+    print(f"tokens             : {sum(r.total_tokens for r in rows):,}", file=sys.stderr)
+    print(f"wall clock (gen)   : {sum(r.duration_s for r in rows):.0f}s", file=sys.stderr)
+
+
+def cmd_report(args) -> int:
+    """Render the summary tables from a finished (or partial) sweep."""
+    out_dir = Path(args.out).resolve()
+    rows = read_jsonl(out_dir / ROWS_NAME)
+    if not rows:
+        raise SystemExit(f"no rows in {out_dir / ROWS_NAME} — run `eval` first")
+    config = {}
+    manifest_path = out_dir / MANIFEST_NAME
+    if manifest_path.is_file():
+        config = json.loads(manifest_path.read_text(encoding="utf-8")).get("config", {})
+
+    if getattr(args, "citywalk_focal", False):
+        # Reproduce CITYWALK's focal set as closely as its published parser
+        # allows: a focal *class file* (one with a matching header), and every
+        # definition in it except private and protected members — their
+        # pre_parser.py skips exactly those two access levels and keeps free
+        # functions. Applied to rows already measured; costs no tokens.
+        from bench.discover import (citywalk_excluded_file, class_access_index,
+                                     is_citywalk_focal)
+
+        project = (Path(args.project).resolve() if getattr(args, "project", "")
+                   else _resolve_project(json.loads(
+                       manifest_path.read_text(encoding="utf-8"))["project"]))
+        access = class_access_index(project)
+        before = len(rows)
+        rows = [
+            r for r in rows
+            if not citywalk_excluded_file(project.name, r.file)
+            and is_citywalk_focal(r.method, access)
+        ]
+        if not rows:
+            raise SystemExit("no rows left after the CITYWALK focal filter")
+        print(f"citywalk-focal: {len(rows)}/{before} rows kept", file=sys.stderr)
+        config = {**config, "focal_set": (
+            "CITYWALK-equivalent (per their pre_parser.py and evaluator.py): "
+            "private/protected members excluded, free functions kept, "
+            f"unicode*/perl_groups* files skipped — {len(rows)} of {before}")}
+
+    if getattr(args, "public_only", False):
+        # Narrow to the focal set a published benchmark would have used, so the
+        # numbers are comparable. Applied to rows already measured — no
+        # regeneration, no further model calls.
+        from bench.discover import is_public_class_method, public_method_index
+
+        project = (Path(args.project).resolve() if getattr(args, "project", "")
+                   else _resolve_project(json.loads(
+                       manifest_path.read_text(encoding="utf-8"))["project"]))
+        index = public_method_index(project)
+        before = len(rows)
+        rows = [r for r in rows if is_public_class_method(r.method, index)]
+        if not rows:
+            raise SystemExit("no public class methods among the measured rows")
+        print(f"public-only: {len(rows)}/{before} rows kept", file=sys.stderr)
+        config = {**config, "focal_set": (
+            "public class methods only (free functions and private helpers "
+            f"excluded): {len(rows)} of {before}")}
+    text = report.render_markdown(rows, config)
+    destination = Path(args.output) if args.output else out_dir / "summary.md"
+    destination.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"\nwrote {destination}", file=sys.stderr)
+    return 0
+
+
+def cmd_run(args) -> int:
+    code = cmd_gen(args)
+    if code:
+        return code
+    code = cmd_eval(args)
+    if code:
+        return code
+    # A sweep is only useful once summarised, so `run` finishes the job.
+    args.output = ""
+    return cmd_report(args)
+
+
