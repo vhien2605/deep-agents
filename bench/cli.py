@@ -662,3 +662,164 @@ def cmd_run(args) -> int:
     return cmd_report(args)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bench", description="CityWalk-style unit-test generation benchmark."
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--project", required=True, help="Path to the C++ project under test.")
+    common.add_argument("--min-lines", type=int, default=3,
+                        help="Skip function definitions shorter than this many lines.")
+    _add_selection_args(common)
+
+    p_discover = sub.add_parser("discover", parents=[common],
+                                help="List the focal methods without running anything.")
+    p_discover.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
+    p_discover.set_defaults(func=cmd_discover)
+
+    p_gen = sub.add_parser("gen", parents=[common], help="Generate tests, one agent run per method.")
+    p_gen.add_argument("--out", required=True, help="Output directory for this sweep.")
+    p_gen.add_argument("--coverage", type=float, default=100.0,
+                       help="Coverage target passed to the agent's prompt.")
+    p_gen.add_argument("--recursion-limit", type=int, default=0,
+                       help="Override the agent's LangGraph step budget.")
+    p_gen.add_argument("--retry-failed", action="store_true",
+                       help="Re-run only the methods a previous sweep failed to "
+                            "produce a file for, reusing their indices and merging "
+                            "into the existing manifest. Failed methods are "
+                            "systematically the complex ones, so retrying them is "
+                            "what keeps the reported rates from being biased.")
+    p_gen.add_argument("--retry-cause", default="",
+                       help="With --retry-failed, retry only the methods whose "
+                            "recorded error matches this regex (e.g. 'timeout'). "
+                            "A timed-out request is a measurement fault and "
+                            "should be re-run; an exhausted step budget is a "
+                            "result and should not.")
+    p_gen.add_argument("--no-agent-fix", action="store_true",
+                       help="Withhold the compiler from the agent so it cannot repair "
+                            "its own output. Use with `eval --repair-rounds 1` to "
+                            "reproduce the CITYWALK repair budget.")
+    p_gen.add_argument("--workers", type=int, default=1,
+                       help="Generate this many methods concurrently. Each worker "
+                            "gets a private copy of the project.")
+    p_gen.set_defaults(func=cmd_gen)
+
+    p_eval = sub.add_parser("eval", help="Compile, run, and measure generated tests.")
+    p_eval.add_argument("--out", required=True, help="Sweep directory produced by `gen`.")
+    p_eval.add_argument("--project", default="", help="Override the project path in the manifest.")
+    p_eval.add_argument("--shard", default="",
+                        help="k/n: score only entries with index %% n == k, writing "
+                             "rows.shard<k>.jsonl and an isolated work dir. Shards "
+                             "need separate --build-dir trees (coverage counters are "
+                             "cleared per method). Merge shards with eval --resume "
+                             "after concatenating the shard files into rows.jsonl.")
+    p_eval.add_argument("--std", default="c++17", help="C++ standard for the instrumented build.")
+    p_eval.add_argument("--jobs", type=int, default=0, help="Parallel build jobs.")
+    p_eval.add_argument("--build-dir", default="", help="Reuse an existing instrumented build.")
+    p_eval.add_argument("--cmake-arg", action="append",
+                        help="Extra -D argument for the CMake configure step (repeatable).")
+    p_eval.add_argument("--repair-rounds", type=int, default=0,
+                        help="LLM repair rounds for a file that fails to compile "
+                             "(CITYWALK uses 1). Compilation errors only; assertion "
+                             "failures are never repaired.")
+    p_eval.add_argument("--resume", action="store_true",
+                        help="Keep rows already in rows.jsonl and only measure the rest.")
+    p_eval.set_defaults(func=cmd_eval)
+
+    p_report = sub.add_parser(
+        "report", help="Aggregate a sweep's rows into summary tables (Markdown)."
+    )
+    p_report.add_argument("--out", required=True, help="Sweep directory to summarise.")
+    p_report.add_argument("--output", default="",
+                          help="Where to write the Markdown (default: <out>/summary.md).")
+    p_report.add_argument("--citywalk-focal", action="store_true",
+                          help="Reproduce CITYWALK's focal set: focal class files "
+                               "only, private/protected members excluded, free "
+                               "functions kept. Filters measured rows; no tokens.")
+    p_report.add_argument("--public-only", action="store_true",
+                          help="Keep only public methods of a class, dropping free "
+                               "functions and private helpers — the focal set CITYWALK "
+                               "uses. Filters already-measured rows; costs no tokens.")
+    p_report.add_argument("--project", default="",
+                          help="Project path for --public-only (default: from the manifest).")
+    p_report.set_defaults(func=cmd_report)
+
+    p_mut = sub.add_parser(
+        "mutate", help="Mutation analysis of already-scored tests (oracle quality)."
+    )
+    p_mut.add_argument("--out", required=True, help="Sweep directory with rows.jsonl and work/.")
+    p_mut.add_argument("--project", default="", help="Override the project path in the manifest.")
+    p_mut.add_argument("--build-dir", required=True,
+                       help="The instrumented build the rows were scored against.")
+    p_mut.add_argument("--max-mutants", type=int, default=10,
+                       help="Mutants per focal method, drawn deterministically.")
+    p_mut.add_argument("--limit", type=int, default=0, help="Stop after this many methods.")
+    p_mut.add_argument("--resume", action="store_true",
+                       help="Keep methods already in mutation.jsonl.")
+    p_mut.set_defaults(func=lambda args: __import__("bench.mutate", fromlist=["main"]).main(args))
+
+    p_mcw = sub.add_parser(
+        "mutate-citywalk",
+        help="Mutation analysis under the source study's protocol (universalmutator, "
+             "whole file, whole suite) on our tests.")
+    p_mcw.add_argument("--out", required=True, help="Sweep directory with rows.jsonl and work/.")
+    p_mcw.add_argument("--project", default="", help="Override the project path in the manifest.")
+    p_mcw.add_argument("--build-dir", required=True,
+                       help="The instrumented build the rows were scored against.")
+    p_mcw.add_argument("--files", action="append", default=[],
+                       help="Mutate only these focal files (repeatable, or comma "
+                            "separated). The source study mutates the project's own "
+                            "source; a vendored dependency compiled into the library "
+                            "is focal for discovery but is not its mutation subject.")
+    p_mcw.add_argument("--sample-lines", type=int, default=0,
+                       help="Draw this many source lines uniformly across the mutated "
+                            "files and give them to universalmutator's --lines, so the "
+                            "tool only generates and validates mutants there (0: every "
+                            "line). Makes a project too large to mutate exhaustively "
+                            "affordable; the score is then an estimate with a "
+                            "line-cluster confidence interval.")
+    p_mcw.add_argument("--sample", type=int, default=0,
+                       help="Score a uniform random sample of this many mutants (0: all).")
+    p_mcw.add_argument("--seed", type=int, default=20260908, help="Sampling seed.")
+    p_mcw.add_argument("--jobs", type=int, default=3, help="Mutants scored concurrently.")
+    p_mcw.add_argument("--gen-jobs", type=int, default=3,
+                       help="Focal files whose mutants are generated concurrently. One "
+                            "universalmutator instance per file; a single file cannot be "
+                            "split, since the instances swap mutants into the same source.")
+    p_mcw.add_argument("--verify-uncovered", action="store_true",
+                       help="For a mutant no test profile reaches, run the whole "
+                            "suite anyway instead of recording it as a survivor. "
+                            "Costs the full suite per such mutant and is the only "
+                            "check that the reachability filter is not inventing "
+                            "survivors.")
+    p_mcw.add_argument("--resume", action="store_true",
+                       help="Keep mutants already in mutation-citywalk.jsonl.")
+    p_mcw.set_defaults(
+        func=lambda a: __import__("bench.mutate_citywalk", fromlist=["main"]).main(a))
+
+    p_run = sub.add_parser("run", parents=[common], help="gen followed by eval.")
+    p_run.add_argument("--out", required=True)
+    p_run.add_argument("--coverage", type=float, default=100.0)
+    p_run.add_argument("--recursion-limit", type=int, default=0)
+    p_run.add_argument("--workers", type=int, default=1)
+    p_run.add_argument("--no-agent-fix", action="store_true")
+    p_run.add_argument("--repair-rounds", type=int, default=0)
+    p_run.add_argument("--std", default="c++17")
+    p_run.add_argument("--jobs", type=int, default=0)
+    p_run.add_argument("--build-dir", default="")
+    p_run.add_argument("--cmake-arg", action="append")
+    p_run.add_argument("--resume", action="store_true")
+    p_run.set_defaults(func=cmd_run)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
