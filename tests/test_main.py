@@ -50,9 +50,18 @@ def _install_src_stub() -> None:
     src_stub.config = config_mod
 
 
+_saved_modules = {name: sys.modules.get(name) for name in ("src", "src.config")}
 _install_src_stub()
 
 import main  # noqa: E402  (must follow sys.modules stub setup)
+
+# Put the real modules back: this file is imported at collection time, so a
+# leftover stub would break every other test module that imports `src`.
+for _name, _mod in _saved_modules.items():
+    if _mod is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _mod
 
 
 # ---------------------------------------------------------------------------
