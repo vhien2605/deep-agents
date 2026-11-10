@@ -44,3 +44,32 @@ def test_find_projects_ranks_name_matches_and_skips_vendored_dirs(tmp_path):
 def test_streamed_text_blocks_join_without_spaces():
     content = [{"type": "text", "text": "Xin"}, {"type": "tool_use", "id": "t"}, {"type": "text", "text": "chào"}]
     assert _text(content) == "Xinchào"
+
+
+def test_generate_tests_reports_an_agent_crash_instead_of_raising(tmp_path, monkeypatch):
+    """A raised tool error would leave the chat thread with an unanswered tool
+    call, which breaks every later message in the conversation."""
+    import src.chat as chat
+
+    class CrashingAgent:
+        def stream(self, *args, **kwargs):
+            raise RuntimeError("recursion limit reached")
+            yield
+
+    (tmp_path / "Makefile").write_text("")
+    monkeypatch.setattr(chat, "create_cpp_unittest_agent", lambda *a, **k: CrashingAgent())
+    monkeypatch.setattr(chat, "get_stream_writer", lambda: lambda line: None)
+    generate_tests = chat.make_chat_tools(tmp_path, model=None, recursion_limit=10)[1]
+
+    out = generate_tests.invoke({"project_path": "."})
+    assert out.startswith("ERROR: the unit-test agent stopped early (RuntimeError: recursion limit reached)")
+
+
+def test_commands_never_inherit_stdin(tmp_path):
+    """A child reading stdin must see EOF, not this process's input."""
+    import sys
+
+    from src.tools.build import run_in_project
+
+    out = run_in_project(tmp_path, [sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"])
+    assert "exit_code: 0" in out and "''" in out

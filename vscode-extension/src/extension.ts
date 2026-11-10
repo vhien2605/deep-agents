@@ -25,8 +25,17 @@ class AgentBridge {
   }
 
   stop(): void {
-    this.proc?.kill();
+    const proc = this.proc;
     this.proc = undefined;
+    if (!proc) return;
+    // The agent's own children (make, a running test binary) must stop too.
+    // On POSIX the agent leads its own process group, so signal the group.
+    try {
+      if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, "SIGTERM");
+      else proc.kill();
+    } catch {
+      proc.kill(); // group already gone
+    }
   }
 
   private start(repoPath: string, uvPath: string): void {
@@ -34,6 +43,7 @@ class AgentBridge {
     const proc = cp.spawn(uvPath, ["run", "python", "-m", "src.chat_server"], {
       cwd: repoPath,
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      detached: process.platform !== "win32", // own process group, see stop()
     });
     this.proc = proc;
     this.buffer = "";

@@ -79,6 +79,9 @@ def run_in_project(project_root: Path, cmd: list[str]) -> str:
             run_cmd,
             cwd=project_root,
             capture_output=True,
+            # Never inherit stdin: a test binary that reads it would hang until
+            # the timeout, and under the chat bridge it would swallow requests.
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )

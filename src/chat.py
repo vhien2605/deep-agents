@@ -187,16 +187,26 @@ def make_chat_tools(workspace: Path, model: BaseChatModel, recursion_limit: int)
         write(f"Running unit-test agent on {root} ({language})")
         agent = create_cpp_unittest_agent(root, coverage_target=coverage_target, model=model)
         messages: list = []
-        for mode, chunk in agent.stream(
-            {"messages": [{"role": "user", "content": task}]},
-            stream_mode=["updates", "values"],
-            config={"recursion_limit": recursion_limit},
-        ):
-            if mode == "updates":
-                for line in _summarise_update(chunk):
-                    write(line)
-            else:
-                messages = chunk.get("messages", messages)
+        try:
+            for mode, chunk in agent.stream(
+                {"messages": [{"role": "user", "content": task}]},
+                stream_mode=["updates", "values"],
+                config={"recursion_limit": recursion_limit},
+            ):
+                if mode == "updates":
+                    for line in _summarise_update(chunk):
+                        write(line)
+                else:
+                    messages = chunk.get("messages", messages)
+        except Exception as exc:
+            # Returned, not raised: an exception escaping the tool leaves the
+            # chat thread with an unanswered tool call, and the provider then
+            # rejects every later message in that conversation.
+            return (
+                f"ERROR: the unit-test agent stopped early ({type(exc).__name__}: "
+                f"{str(exc)[:500]}). Test files written so far are still in {root}. "
+                f"Last agent message: {_final_text(messages)}"
+            )
         return _final_text(messages)
 
     return [find_projects, generate_tests]

@@ -111,7 +111,8 @@
 
   function showHelp() {
     if (log.querySelector(".welcome")) log.innerHTML = "";
-    const rows = allCommands().map((c) => `| \`/${c.name}${c.args ? " " + c.args : ""}\` | ${c.group} | ${c.description} |`);
+    const rows = allCommands().map((c) =>
+      `| \`/${c.name}${c.args ? " " + c.args : ""}\` | ${c.group} | ${c.description.replace(/\|/g, "\\|")} |`);
     const el = document.createElement("div");
     el.className = "turn prose help";
     el.innerHTML = marked.parse(["| Lệnh | Loại | Mô tả |", "|---|---|---|", ...rows].join("\n"));
