@@ -42,19 +42,7 @@ Requirements — the benchmark measures these, so follow them exactly:
    Never weaken an assertion just to make it pass.
 
 Start by reading the focal function and the headers that declare its types.
-When the test file is written, stop — the harness compiles and runs it.
-{build_policy}"""
-
-# Appended when the benchmark enforces the repair budget itself. The agent
-# keeps a shell through its backend, so the prohibition is stated rather than
-# merely implied by withholding the build tools; runs are audited afterwards
-# for build artefacts to confirm it held.
-NO_BUILD_POLICY = """
-Do NOT compile, build, link, or run anything — no g++, no make, no cmake, no
-test binary, not through any tool and not through the shell. You get exactly
-one attempt at the file: write it correctly from reading the source. Repair,
-if any, happens outside this run.
-"""
+When the test file is written, stop — the harness compiles and runs it."""
 
 
 @dataclass
@@ -120,7 +108,6 @@ def generate_for_method(
     *,
     recursion_limit: int,
     stream_callback=None,
-    allow_build: bool = True,
 ) -> GenerationResult:
     """Run the agent for one focal method and return the run's cost metrics."""
     output_path = output_path_for(project_root, focal, index)
@@ -137,7 +124,6 @@ def generate_for_method(
         complexity=focal.complexity,
         branch_count=focal.branch_count,
         output_path=relative_output,
-        build_policy="" if allow_build else NO_BUILD_POLICY,
     )
 
     result = GenerationResult(focal=focal, output_path=output_path)

@@ -264,7 +264,6 @@ def _failed_from_manifest(
 
 def cmd_gen(args) -> int:
     project = Path(args.project).resolve()
-    args.no_agent_fix = getattr(args, "no_agent_fix", False)
     out_dir = Path(args.out).resolve()
 
     retry_pairs: list[tuple[int, FocalMethod]] = []
@@ -293,10 +292,7 @@ def cmd_gen(args) -> int:
         DEFAULT_RECURSION_LIMIT, LLM_MODEL, LLM_TEMPERATURE, LLM_TIMEOUT_SECONDS,
     )
 
-    allow_build = not args.no_agent_fix
-    agent = create_cpp_unittest_agent(
-        project, coverage_target=args.coverage, with_build_tools=allow_build
-    )
+    agent = create_cpp_unittest_agent(project, coverage_target=args.coverage)
     recursion_limit = args.recursion_limit or DEFAULT_RECURSION_LIMIT
     # Recorded with the sweep so the table can state the sampling conditions it
     # was produced under — the numbers are meaningless without them.
@@ -305,7 +301,6 @@ def cmd_gen(args) -> int:
         "temperature": LLM_TEMPERATURE,
         "request_timeout_s": LLM_TIMEOUT_SECONDS,
         "recursion_limit": recursion_limit,
-        "agent_may_build": allow_build,
         "repair_rounds": getattr(args, "repair_rounds", 0),
         "selection": {
             "filter_file": args.filter_file, "filter_method": args.filter_method,
@@ -338,16 +333,12 @@ def cmd_gen(args) -> int:
     lock = threading.Lock()
     done = 0
 
-    # Worker 0 uses the project itself; the rest get private copies. One agent
-    # per workspace, since an agent is bound to the tree it was built for.
+    # Worker 0 uses the project itself; the rest get private copies so two
+    # agents never run a build in the same tree. One agent per workspace, since
+    # an agent is bound to the tree it was built for.
     local = threading.local()
     worker_ids = itertools.count()
-    # Private copies exist so two agents cannot run a build in the same tree.
-    # Without the build tools there is nothing to collide over — each method
-    # writes its own uniquely named test file — so every worker shares the
-    # project directly. That saves a copy per worker, which for mlx at 319 MB
-    # and 32 workers would be 10 GB of disk and minutes of start-up.
-    share_workspace = workers == 1 or not allow_build
+    share_workspace = workers == 1
     workspaces: dict[int, tuple[Path, object]] = (
         {0: (project, agent)} if share_workspace else {}
     )
@@ -359,10 +350,7 @@ def cmd_gen(args) -> int:
             workspace = _worker_workspace(out_dir, project, worker_id)
             workspaces[worker_id] = (
                 workspace,
-                create_cpp_unittest_agent(
-                    workspace, coverage_target=args.coverage,
-                    with_build_tools=allow_build,
-                ),
+                create_cpp_unittest_agent(workspace, coverage_target=args.coverage),
             )
         return workspaces[worker_id]
 
@@ -379,7 +367,7 @@ def cmd_gen(args) -> int:
                 local.workspace, local.agent = agent_for(local.worker_id)
         result = runner.generate_for_method(
             local.agent, local.workspace, focal, index,
-            recursion_limit=recursion_limit, allow_build=allow_build,
+            recursion_limit=recursion_limit,
         )
         stored = generated_dir / result.output_path.name
         if result.wrote_file:
@@ -697,10 +685,6 @@ def build_parser() -> argparse.ArgumentParser:
                             "A timed-out request is a measurement fault and "
                             "should be re-run; an exhausted step budget is a "
                             "result and should not.")
-    p_gen.add_argument("--no-agent-fix", action="store_true",
-                       help="Withhold the compiler from the agent so it cannot repair "
-                            "its own output. Use with `eval --repair-rounds 1` to "
-                            "reproduce the CITYWALK repair budget.")
     p_gen.add_argument("--workers", type=int, default=1,
                        help="Generate this many methods concurrently. Each worker "
                             "gets a private copy of the project.")
@@ -804,7 +788,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--coverage", type=float, default=100.0)
     p_run.add_argument("--recursion-limit", type=int, default=0)
     p_run.add_argument("--workers", type=int, default=1)
-    p_run.add_argument("--no-agent-fix", action="store_true")
     p_run.add_argument("--repair-rounds", type=int, default=0)
     p_run.add_argument("--std", default="c++17")
     p_run.add_argument("--jobs", type=int, default=0)

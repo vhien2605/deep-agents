@@ -64,7 +64,7 @@ PRECHECK
     python -m bench.cli run \
         --project "$project" --out "$out" \
         --workers "$workers" --jobs 4 \
-        --citywalk-focal --paper-sample --no-agent-fix --repair-rounds 1 \
+        --citywalk-focal --paper-sample --repair-rounds 1 \
         --build-dir "$out/precheck" > "$out/run.log" 2>&1
     # A failed method is systematically a complex one, so leaving it out
     # inflates every rate. One retry pass recovers most of them; the timeouts
@@ -79,7 +79,7 @@ except Exception: print(0)
 ")
       if [ "$failed" -gt 0 ]; then
         echo "== $short: retrying $failed failed methods $(date +%H:%M:%S)"
-        python -m bench.cli gen --project "$project" --out "$out"             --retry-failed --workers "$workers"             --no-agent-fix >> "$out/run.log" 2>&1
+        python -m bench.cli gen --project "$project" --out "$out"             --retry-failed --workers "$workers" >> "$out/run.log" 2>&1
         python -m bench.cli eval --out "$out" --repair-rounds 1             --build-dir "$out/precheck" >> "$out/run.log" 2>&1
       fi
     fi

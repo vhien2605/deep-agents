@@ -24,7 +24,6 @@ def create_cpp_unittest_agent(
     coverage_target: float = DEFAULT_COVERAGE_TARGET,
     model: BaseChatModel | None = None,
     checkpointer=None,
-    with_build_tools: bool = True,
 ):
     """Create a deep agent that generates unit tests for the C++ project at
     `project_root`. Returns a compiled LangGraph agent; invoke it with
@@ -32,12 +31,6 @@ def create_cpp_unittest_agent(
 
     The model defaults to the provider configured in .env
     (LLM_PROVIDER / LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
-
-    `with_build_tools=False` withholds the compiler and the test-fixer
-    subagent, leaving an agent that can read and analyse the project but not
-    build it. Benchmarks that must bound the repair budget use this: an agent
-    holding a compiler decides for itself how many times to retry, which makes
-    "one repair round" unenforceable.
     """
     project_root = Path(project_root).resolve()
     if not project_root.is_dir():
@@ -88,6 +81,15 @@ def create_cpp_unittest_agent(
             "tools": analysis_tools + symbolic_tools,
         },
         {
+            "name": "test-fixer",
+            "description": (
+                "Builds with make, runs the tests, and repairs compile errors or "
+                "failing assertions in generated tests until the suite passes."
+            ),
+            "system_prompt": prompts.FIXER_PROMPT.format(**fmt),
+            "tools": analysis_tools + build_tools,
+        },
+        {
             "name": "coverage-auditor",
             "description": (
                 "Measures line coverage with gcov/lcov and reports uncovered "
@@ -97,21 +99,7 @@ def create_cpp_unittest_agent(
             "tools": analysis_tools + build_tools + coverage_tools + symbolic_tools,
         },
     ]
-
-    if with_build_tools:
-        subagents.insert(3, {
-            "name": "test-fixer",
-            "description": (
-                "Builds with make, runs the tests, and repairs compile errors or "
-                "failing assertions in generated tests until the suite passes."
-            ),
-            "system_prompt": prompts.FIXER_PROMPT.format(**fmt),
-            "tools": analysis_tools + build_tools,
-        })
-        top_level_tools = analysis_tools + build_tools + coverage_tools + symbolic_tools
-    else:
-        subagents = [s for s in subagents if s["name"] != "coverage-auditor"]
-        top_level_tools = analysis_tools + symbolic_tools
+    top_level_tools = analysis_tools + build_tools + coverage_tools + symbolic_tools
 
     return create_deep_agent(
         model=model,

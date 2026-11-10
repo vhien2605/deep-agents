@@ -62,7 +62,7 @@ print(json.load(open('$manifest', encoding='utf-8'))['project'])
   echo "== $short: retrying $failed failed methods ($WORKERS workers) $(date +%H:%M:%S)"
   python -m bench.cli gen \
       --project "$project" --out "$out" \
-      --retry-failed --retry-cause "$CAUSE" --workers "$WORKERS" --no-agent-fix \
+      --retry-failed --retry-cause "$CAUSE" --workers "$WORKERS" \
       >> "$out/retry.log" 2>&1
 
   recovered=$(CAUSE="$CAUSE" python -c "

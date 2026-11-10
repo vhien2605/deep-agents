@@ -61,7 +61,6 @@ PRECHECK
       --jobs "$JOBS" \
       --citywalk-focal \
       --paper-sample \
-      --no-agent-fix \
       --repair-rounds 1 \
       --build-dir "$out/precheck" \
       > "$out/run.log" 2>&1
