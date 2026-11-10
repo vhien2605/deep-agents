@@ -79,7 +79,89 @@ uv run main.py --project /path/to/cpp/project --coverage 90 \
 
 Project đích cần một `Makefile` với target `test` (build + chạy test). Target `coverage` (build với `--coverage`, chạy test, xuất `coverage.info`) là tùy chọn — nếu thiếu, agent tự build instrumented và gọi `lcov --capture` (xem `skills/coverage-lcov/SKILL.md`).
 
-### Ngân sách bước chạy (`recursion_limit`)
+## Hướng dẫn dùng extension VS Code (chat với agent)
+
+Thay vì gõ lệnh, bạn chat với agent ngay trong VS Code — giống chat với Claude: nói project nào cần test, agent tự tìm project, sinh test, build, sửa lỗi, đo coverage và báo lại, chữ hiện dần theo kiểu streaming.
+
+### 1. Cài đặt
+
+Cần thêm: **Node.js ≥ 18** và **VS Code ≥ 1.90** (ngoài các yêu cầu ở mục [Yêu cầu](#yêu-cầu)).
+
+```bash
+uv sync                                   # dependencies Python (một lần)
+cd vscode-extension
+npm install
+npm run package                           # tạo unittest-agent-0.1.0.vsix
+code --install-extension unittest-agent-0.1.0.vsix
+```
+
+Sau khi sửa code extension, chạy lại hai lệnh cuối (thêm `--force`) rồi *Developer: Reload Window*.
+
+### 2. Cấu hình
+
+**`.env`** ở repo root — ví dụ dùng Claude API:
+
+```env
+LLM_PROVIDER=anthropic
+LLM_BASE_URL=
+LLM_API_KEY=sk-ant-...
+LLM_MODEL=claude-sonnet-5-5
+# Model Claude đời mới từ chối tham số temperature → không gửi
+LLM_TEMPERATURE=none
+```
+
+**Settings VS Code** (`Ctrl+,` → tìm `unittestAgent`):
+
+| Setting | Giá trị |
+|---|---|
+| `unittestAgent.repoPath` | Đường dẫn tuyệt đối tới repo này (chỗ có `src/` và `.env`). **Bắt buộc** khi cài từ `.vsix` |
+| `unittestAgent.uvPath` | Đường dẫn `uv` nếu VS Code không thấy nó trong PATH (vd. `/home/<user>/.local/bin/uv`) |
+
+### 3. Sử dụng
+
+1. Mở folder chứa project cần test (`File → Open Folder`).
+2. Bấm icon **Unit-test Agent** (ngoặc vuông có dấu ✓) ở activity bar bên trái.
+3. Gõ yêu cầu bằng tiếng Việt hoặc tiếng Anh rồi Enter, ví dụ:
+   - *"viết test cho project này, coverage 90%"*
+   - *"test project demo_calculator, chỉ file calculator.cpp"*
+   - *"liệt kê các project ở đây"*
+
+Agent tìm project theo tên trong folder đang mở (thư mục có `Makefile` → C++, `pyproject.toml`/`setup.py` → Python, `pom.xml` → Java). Nhiều kết quả thì nó hỏi lại; một kết quả thì chạy luôn. Trong lúc chạy, khung **"Đang chạy…"** hiện từng bước (phân tích, sinh test, sửa lỗi, đo coverage) — bấm vào để xem chi tiết. Xong, agent tóm tắt: file test đã viết, coverage đạt được, bug thật phát hiện được (đánh dấu `// BUG:` trong test).
+
+Agent **ghi file test vào project thật** — nên commit code trước khi chạy để dễ xem diff.
+
+### 4. Lệnh `/`
+
+Gõ `/` để mở menu (↑/↓ chọn, Enter/Tab dùng, Esc đóng):
+
+| Lệnh | Tác dụng |
+|---|---|
+| `/test [coverage]` | Viết unit test cho project đang mở, vd. `/test 90` (mặc định 80%) |
+| `/projects` | Liệt kê các project trong workspace |
+| `/new` | Cuộc trò chuyện mới (dừng lượt đang chạy nếu có) |
+| `/stop` | Dừng agent — dùng được cả khi đang chạy |
+| `/help` | Bảng tất cả lệnh và skill |
+| `/<skill> [yêu cầu]` | Gọi một skill trong `skills/`, vd. `/pytest-testing chỉ test utils.py`, `/symbolic-execution`, `/test-repair`. Agent đọc `SKILL.md` của skill đó trước khi làm |
+
+### 5. Lưu ý & xử lý lỗi
+
+- **Dừng** (nút vuông hoặc `/stop`) kill tiến trình agent, nên lịch sử trò chuyện mất theo; tin nhắn sau bắt đầu cuộc mới.
+- Log đầy đủ của agent: **Output** panel → chọn *Unit-test Agent*.
+
+| Lỗi hiện trong chat | Cách sửa |
+|---|---|
+| `Set unittestAgent.repoPath…` | Đặt setting `unittestAgent.repoPath` (mục 2) |
+| `Cannot start agent (uv)…` | Đặt `unittestAgent.uvPath` thành đường dẫn tuyệt đối của `uv` |
+| `AuthenticationError … invalid x-api-key` | Sai `LLM_API_KEY` trong `.env` |
+| `NotFoundError … model: …` | Tên model không có với key này — đổi `LLM_MODEL` |
+| `temperature is deprecated for this model` | Đặt `LLM_TEMPERATURE=none` |
+| `TOOLCHAIN MISSING` | Cài `make`/`g++`/`lcov` (C++), `mvn` (Java)… cho project đích |
+
+### Cách hoạt động
+
+Extension spawn `uv run python -m src.chat_server` và nói chuyện qua stdio bằng JSON lines (giao thức ghi ở đầu `src/chat_server.py`). Chat agent (`src/chat.py`) có hai tool: `find_projects` và `generate_tests` — tool thứ hai chạy đúng agent của `main.py` trên project được chọn và đẩy tiến độ ra stream. Chỉ model của chat agent bật streaming (`build_chat_model(streaming=True)`); agent sinh test bên trong vẫn tắt streaming như trước. Giao diện nằm ở `vscode-extension/media/` (`chat.css`, `chat.js`, markdown render bằng `marked`).
+
+## Ngân sách bước chạy (`recursion_limit`)
 
 LangGraph đếm mỗi lần một node chạy là một super-step, và một lượt của agent tốn ba step (`model` → `TodoListMiddleware.after_model` → `tools`), nên giới hạn N chỉ cho phép khoảng **N/3 tool call**. Mặc định 200 của LangGraph tương đương ~66 tool call — vòng lặp analyze → solve → generate → fix → measure tiêu hết số đó trên bất kỳ project nào không tầm thường, và run chết với `GraphRecursionError`.
 

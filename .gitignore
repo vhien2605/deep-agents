@@ -88,3 +88,9 @@ paper/img/previews/
 template_KLTN_UET_Vi/
 graphify-out/
 .gitnexus/
+
+# VS Code extension build output
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+vscode-extension/media/marked.umd.js

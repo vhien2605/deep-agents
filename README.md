@@ -79,7 +79,33 @@ uv run main.py --project /path/to/cpp/project --coverage 90 \
 
 The target project needs a `Makefile` with a `test` target (build + run tests). A `coverage` target (build with `--coverage`, run tests, emit `coverage.info`) is optional — without it, the agent builds an instrumented binary itself and calls `lcov --capture` (see `skills/coverage-lcov/SKILL.md`).
 
-### Step budget (`recursion_limit`)
+## Using the VS Code extension (chat with the agent)
+
+Instead of running commands, chat with the agent in a VS Code side panel: name the project to test and the agent finds it, generates tests, builds, repairs, measures coverage and reports back, with the reply streamed token by token. Full step-by-step guide (Vietnamese): [README.vi.md](README.vi.md#hướng-dẫn-dùng-extension-vs-code-chat-với-agent).
+
+**Install** (needs Node.js ≥ 18, VS Code ≥ 1.90):
+
+```bash
+uv sync
+cd vscode-extension && npm install && npm run package
+code --install-extension unittest-agent-0.1.0.vsix
+```
+
+**Configure**: `.env` as in [Requirements](#requirements) (for recent Claude models also set `LLM_TEMPERATURE=none`; they reject `temperature`). In VS Code settings set `unittestAgent.repoPath` to this repo's absolute path (required for a `.vsix` install) and, if `uv` is not on VS Code's PATH, `unittestAgent.uvPath`.
+
+**Use**: open the folder to test, click the **Unit-test Agent** icon in the activity bar, and type e.g. *"write tests for this project, 90% coverage"*. The agent writes test files into the real project — commit first. Logs: Output panel → *Unit-test Agent*.
+
+| `/` command | Effect |
+|---|---|
+| `/test [coverage]` | Generate tests for the open project (default 80%) |
+| `/projects` | List projects in the workspace |
+| `/new` · `/stop` | New conversation · stop the running agent (also loses the conversation) |
+| `/help` | Table of commands and skills |
+| `/<skill> [request]` | Run with a skill from `skills/`, e.g. `/pytest-testing only utils.py`; the agent reads its `SKILL.md` first |
+
+How it works: the extension spawns `uv run python -m src.chat_server` (JSON lines over stdio, protocol documented in that file). The chat agent in `src/chat.py` has two tools, `find_projects` and `generate_tests`; the latter runs the same agent as `main.py`. Only the chat model streams (`build_chat_model(streaming=True)`); the inner agent keeps streaming off.
+
+## Step budget (`recursion_limit`)
 
 LangGraph counts every node execution as one super-step, and one agent turn costs three of them (`model` → `TodoListMiddleware.after_model` → `tools`), so a limit of N allows only about **N/3 tool calls**. LangGraph's own default of 200 is ~66 tool calls, which the analyze → solve → generate → fix → measure loop exhausts on any non-trivial project, and the run dies with `GraphRecursionError`.
 

@@ -98,6 +98,7 @@ def test_require_llm_config_error_mentions_env_file(monkeypatch):
 
 def test_require_llm_config_error_lists_all_three(monkeypatch):
     """When all are missing, all three names are listed."""
+    monkeypatch.setattr(config_module, "LLM_PROVIDER", "openai")
     monkeypatch.setattr(config_module, "LLM_BASE_URL", "")
     monkeypatch.setattr(config_module, "LLM_API_KEY", "")
     monkeypatch.setattr(config_module, "LLM_MODEL", "")

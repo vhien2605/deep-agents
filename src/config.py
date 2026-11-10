@@ -64,7 +64,13 @@ def _float_env(name: str, default: float) -> float:
 # different test file every time and no measurement can be repeated. This also
 # matches the setup used by the CITYWALK evaluation, which the bench/ harness
 # reproduces.
-LLM_TEMPERATURE = _float_env("LLM_TEMPERATURE", 0.0)
+#
+# Set LLM_TEMPERATURE=none to omit the parameter entirely: newer Claude models
+# reject any `temperature` with "deprecated for this model".
+LLM_TEMPERATURE: float | None = (
+    None if os.environ.get("LLM_TEMPERATURE", "").strip().lower() == "none"
+    else _float_env("LLM_TEMPERATURE", 0.0)
+)
 
 # Per-request timeout. Long enough that a slow completion is waited out rather
 # than retried: a retry costs another full prompt and skews the token totals a

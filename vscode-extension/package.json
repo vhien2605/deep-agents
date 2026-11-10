@@ -1,0 +1,91 @@
+{
+  "name": "unittest-agent",
+  "displayName": "Unit-test Agent",
+  "description": "Chat with the deep unit-test agent: generate, repair and coverage-check tests for C++, Python and Java projects.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Testing",
+    "AI",
+    "Chat"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "unittestAgent",
+          "title": "Unit-test Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "unittestAgent": [
+        {
+          "type": "webview",
+          "id": "unittestAgent.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "unittestAgent.newChat",
+        "title": "Unit-test Agent: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "unittestAgent.stop",
+        "title": "Unit-test Agent: Stop",
+        "icon": "$(debug-stop)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "unittestAgent.newChat",
+          "when": "view == unittestAgent.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "unittestAgent.stop",
+          "when": "view == unittestAgent.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Unit-test Agent",
+      "properties": {
+        "unittestAgent.repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path of the deep-agents repo (holds src/ and .env). Empty = the folder containing this extension's source (development mode)."
+        },
+        "unittestAgent.uvPath": {
+          "type": "string",
+          "default": "uv",
+          "description": "uv executable used to start the Python agent."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p . && cp node_modules/marked/lib/marked.umd.js media/marked.umd.js",
+    "watch": "tsc -watch -p .",
+    "package": "npm run compile && vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "marked": "^15.0.12",
+    "typescript": "^5.5.0"
+  }
+}

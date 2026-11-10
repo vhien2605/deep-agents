@@ -34,6 +34,7 @@ def _configure(monkeypatch, provider, base_url=""):
     monkeypatch.setattr(config_module, "LLM_MODEL", "test-model")
     monkeypatch.setattr(config_module, "LLM_BASE_URL", base_url)
     monkeypatch.setattr(config_module, "LLM_API_KEY", "secret")
+    monkeypatch.setattr(config_module, "LLM_TEMPERATURE", 0.0)
 
 
 def _capture(monkeypatch, module, name):
@@ -61,6 +62,18 @@ def test_openai_compatible_endpoint(monkeypatch):
     assert built["disable_streaming"] is True
     # No max_tokens: a long test file is never truncated mid-file.
     assert "max_tokens" not in built
+
+
+def test_temperature_none_is_not_sent(monkeypatch):
+    """Newer Claude models reject any temperature, so None must omit it."""
+    import langchain_anthropic
+
+    _configure(monkeypatch, "anthropic")
+    monkeypatch.setattr(config_module, "LLM_TEMPERATURE", None)
+    built = _capture(monkeypatch, langchain_anthropic, "ChatAnthropic")
+    build_chat_model()
+    assert "temperature" not in built
+
 
 
 def test_openrouter_defaults_its_base_url(monkeypatch):
